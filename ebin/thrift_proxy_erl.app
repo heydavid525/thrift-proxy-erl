@@ -1,0 +1,16 @@
+{application,thrift_proxy_erl,
+    [{description,"A thrift proxy"},
+    {vsn,"0.0.0"},
+    {modules,[erlterm2file,
+        proxy_gw_ads]},
+    {registered,[]},
+    {applications,[kernel, 
+                   stdlib, 
+                   mondemand, 
+                   oxcon, 
+                   lager]},
+    {env,[{log_level, debug},
+          {log_dir, "/home/produser/.thrift_proxy"}
+          ]},
+    {mod,{thrift_proxy_app,[]}}
+    ]}.
