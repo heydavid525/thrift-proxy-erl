@@ -1,0 +1,12 @@
+
+# exclude executables
+ebin/*.beam
+
+# crash log, dump, etc
+*.log
+*.dump
+
+/trash
+
+# Don't commit docs
+/doc/*
