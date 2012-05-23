@@ -45,5 +45,5 @@ handle_function (Function, Args) when is_atom(Function), is_tuple(Args) ->
   {reply, gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args)}.
 
 stop(Server) ->
-  thrift_socket_server:stop(server),
+  thrift_socket_server:stop(Server),
   ok.

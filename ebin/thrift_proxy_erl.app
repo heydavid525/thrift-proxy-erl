@@ -9,7 +9,11 @@
                    mondemand, 
                    oxcon, 
                    lager]},
-    {env,[{log_level, debug},
+    {env,[{proxy_list, [proxy_gw_ads, 
+                        proxy_ads_mds, 
+                        proxy_mds_mops, 
+                        proxy_mops_ssrtb]},
+          {log_level, debug},
           {log_dir, "/home/produser/.thrift_proxy"}
           ]},
     {mod,{thrift_proxy_app,[]}}

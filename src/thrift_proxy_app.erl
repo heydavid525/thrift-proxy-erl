@@ -40,8 +40,9 @@ set_adtype(NewAdType) ->
   ].
 
 get_proxy_list() ->
-  [proxy_gw_ads, proxy_ads_mds, proxy_mds_mops, proxy_mops_ssrtb].
 %  [proxy_gw_ads, proxy_ads_mds, proxy_mds_mops, proxy_mops_ssrtb].
+  {ok, ProxyList} = application:get_env(proxy_list),
+  ProxyList.
 
 stop() ->
   application:stop(thrift_proxy_erl).
