@@ -42,7 +42,12 @@ set_adtype(NewAdType) ->
 %%====================================================================
 handle_function (Function, Args) when is_atom(Function), is_tuple(Args) ->
   lager:info("~p:handle_function -- Function = ~p.", [?MODULE, Function]),
-  {reply, gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args)}.
+
+  if Function =:= notify ->
+    gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args);
+  true ->
+    {reply, gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args)}
+  end.
 
 stop(Server) ->
   thrift_socket_server:stop(Server),

@@ -229,6 +229,9 @@ service=~p, handler=~p, framed=~p.",
   ok.
 
 
+%%====================================================================
+%% Private Functions 
+%%====================================================================
 %% Forward the call and record the Thrift request and response.
 forward_fun_call(Function, Args,
                 #state{proxy_name=ProxyName,
@@ -241,6 +244,22 @@ forward_fun_call(Function, Args,
   if ProxyName =:= proxy_gw_ads -> lager:info("adtype = ~p.", [AdType]);
      true -> ok
   end,
+  
+% noifty is a cast function
+if Function =:= notify ->
+    lager:debug("notify function call."),
+    ThriftResponse =
+      case catch ox_thrift_conn:cast (ProxyClientName, Function,
+        tuple_to_list(Args)) of
+        ok ->
+          lager:debug("~p: Thrift cast finish normally.", [ProxyName]),
+          ok;
+        Error ->
+          lager:debug("~p: Thrift cast finish with error: ~p.", [ProxyName,
+            Error]),
+          Error
+      end;
+true ->
   
   % templated after make_call in ox_broker_client
   {ok, Timeout} = oxcon:get_conf(ox_http_gateway, thrift_timeout),
@@ -271,13 +290,12 @@ forward_fun_call(Function, Args,
       erlterm2file:log(LogServerReq, 
         #fun_call{adtype=AdType, fct=Function, args=Args}),
       erlterm2file:log(LogServerResp, ThriftResponse)
-  end,
+  end
+
+end,
 
   ThriftResponse.
 
-%%====================================================================
-%% Private Functions 
-%%====================================================================
 %% Get application environment variables.
 get_env_var(Var) ->
   {ok, Val} = application:get_env(Var),
