@@ -13,11 +13,15 @@
 %% API
 -export([start_all/0,
          set_adtype/1,
+         get_adtype/0,
          stop/0,
          get_proxy_list/0]).
 
 %% Application callbacks
 -export([start/2, stop/1]).
+
+%% Should be the same as in .app file.
+-define(APP_NAME, thrift_proxy_erl).
 
 %%====================================================================
 %% API 
@@ -30,7 +34,7 @@
 start_all() ->
   [ ensure_started(App)
     || App <- [ sasl, lager, oxcon, thrift, lwes,
-                mondemand, thrift_proxy_erl]
+                mondemand, ?APP_NAME]
   ].
 
 % Change the ad type for all proxy gen_server.
@@ -39,13 +43,19 @@ set_adtype(NewAdType) ->
     || Mod <- get_proxy_list()
   ].
 
+get_adtype() ->
+  Result = [ Mod:get_adtype() 
+    || Mod <- get_proxy_list()
+  ],
+  print_list_format(Result).
+
 get_proxy_list() ->
-%  [proxy_gw_ads, proxy_ads_mds, proxy_mds_mops, proxy_mops_ssrtb].
-  {ok, ProxyList} = application:get_env(proxy_list),
+  {ok, ProxyList} = application:get_env(?APP_NAME, proxy_list),
+  lager:debug("ProxyList = ~p", [ProxyList]),
   ProxyList.
 
 stop() ->
-  application:stop(thrift_proxy_erl).
+  application:stop(?APP_NAME).
 
 %%====================================================================
 %% Application callbacks
@@ -93,3 +103,9 @@ ensure_started(App) ->
      {error, {already_started, App}} ->
        ok
    end.
+
+print_list_format([]) ->
+  ok;
+print_list_format([H | T]) ->
+  io:format("~p~n", [H]),
+  print_list_format(T).

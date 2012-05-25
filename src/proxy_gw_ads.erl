@@ -18,6 +18,7 @@
 
 %% API
 -export([start_link/0,
+         get_adtype/0,
          set_adtype/1]).
 
 %% Thrift callbacks
@@ -36,6 +37,9 @@ start_link() ->
 
 set_adtype(NewAdType) ->
   gen_thrift_proxy:set_adtype(?SERVER_NAME, NewAdType).
+
+get_adtype() ->
+  gen_thrift_proxy:get_adtype(?SERVER_NAME).
 
 %%====================================================================
 %% Thrift callback functions

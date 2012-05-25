@@ -16,7 +16,8 @@
 -export([start_link/5, 
          stop/1,
          handle_function/3,
-         set_adtype/2]).
+         set_adtype/2,
+         get_adtype/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -55,6 +56,8 @@ handle_function(ServerName, Fun, Args) ->
 set_adtype(ServerName, NewAdType) ->
   gen_server:call(ServerName, {set_adtype, NewAdType}).
 
+get_adtype(ServerName) ->
+  gen_server:call(ServerName, get_adtype).
 
 %%====================================================================
 %% gen_server callbacks
@@ -102,6 +105,9 @@ handle_call({handle_function, Fun, Args}, _From, State) ->
     {reply, forward_fun_call(Fun, Args, State), State};
 handle_call({set_adtype, NewAdType}, _From, State) ->
     {reply, ok, State#state{adtype=NewAdType}};
+handle_call(get_adtype, _From, State=#state{proxy_name=Proxy, adtype=AdType}) ->
+    Ret = string_format("~p -- adtype = ~p", [Proxy, AdType]),
+    {reply, Ret, State};
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -303,3 +309,14 @@ end,
 get_env_var(Var) ->
   {ok, Val} = application:get_env(Var),
   Val.
+
+%% string_format/2
+%% Like io:format except it returns the evaluated string rather than write
+%% it to standard output.
+%% Parameters:
+%%   1. format string similar to that used by io:format.
+%%   2. list of values to supply to format string.
+%% Returns:
+%%   Formatted string.
+string_format(Pattern, Values) ->
+     lists:flatten(io_lib:format(Pattern, Values)).
