@@ -12,7 +12,7 @@
 -module(proxy_mds_mops).
 
 %% User defined macros:
--define(SERVER_PORT, 12521).
+-define(SERVER_PORT, 8704).
 -define(CLIENT_PORT, 8702).
 -define(THRIFT_SVC, opportunityService_thrift).
 
