@@ -4,6 +4,7 @@
 -record(fun_call, 
         {adtype :: atom(),
          fct    :: atom(),
-         args}).
+         args,
+         resp}).
 
 -endif.

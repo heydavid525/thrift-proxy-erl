@@ -27,8 +27,7 @@
                 thrift_svc,
                 server_port,
                 client_port,
-                req_log_server,
-                resp_log_server,
+                log_server,
                 adtype = afr_flash  % default ad type.
         }).
 
@@ -74,16 +73,14 @@ init({Proxy, ServerPort, ClientPort, ThriftSvc}) ->
   % 4 servers are to be created with monitors.
   %ProxyServerName   =  list_to_atom(atom_to_list(Proxy) ++ "_server"),
   ProxyClientName   =  list_to_atom(atom_to_list(Proxy) ++ "_client"),
-  ReqLogServerName  =  list_to_atom(atom_to_list(Proxy) ++ "_req"),
-  RespLogServerName =  list_to_atom(atom_to_list(Proxy) ++ "_resp"),
+  LogServerName  =  list_to_atom(atom_to_list(Proxy) ++ "_log"),
 
   State = #state{proxy_name         = Proxy,
-                 proxy_client_name = ProxyClientName,
+                 proxy_client_name  = ProxyClientName,
                  thrift_svc         = ThriftSvc,
                  server_port        = ServerPort,
                  client_port        = ClientPort,
-                 req_log_server     = ReqLogServerName,
-                 resp_log_server    = RespLogServerName},
+                 log_server         = LogServerName},
 
   start_proxy(State), % start_proxy does not modify State
   lager:debug("Proxy server ~p init/1 finished.", [Proxy]),
@@ -152,13 +149,12 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-start_proxy(#state{proxy_name=ProxyName,
-                   proxy_client_name=ProxyClientName,
-                   thrift_svc=ThriftSvc,
-                   server_port=ServerPort,
-                   client_port=ClientPort,
-                   req_log_server=LogServerReq,
-                   resp_log_server=LogServerResp
+start_proxy(#state{proxy_name           = ProxyName,
+                   proxy_client_name    = ProxyClientName,
+                   thrift_svc           = ThriftSvc,
+                   server_port          = ServerPort,
+                   client_port          = ClientPort,
+                   log_server           = LogServer
             }) ->
   
   %% IsFramed should be true except for ssRtbService_thrift, which uses
@@ -219,12 +215,9 @@ service=~p, handler=~p, framed=~p.",
 
   %% Start the logging facilities
   LogDir = get_env_var(log_dir),
-  LogFileReq = 
-    filename:join(LogDir, atom_to_list(ProxyName) ++ "_req.log"),
-  LogFileResp = 
-    filename:join(LogDir, atom_to_list(ProxyName) ++ "_resp.log"),
-  erlterm2file:start_link(LogServerReq, LogFileReq),
-  erlterm2file:start_link(LogServerResp, LogFileResp),
+  LogFile = 
+    filename:join(LogDir, atom_to_list(ProxyName) ++ ".log"),
+  erlterm2file:start_link(LogServer, LogFile),
 
   ok.
 
@@ -236,8 +229,7 @@ service=~p, handler=~p, framed=~p.",
 forward_fun_call(Function, Args,
                 #state{proxy_name=ProxyName,
                        proxy_client_name=ProxyClientName,
-                       req_log_server=LogServerReq,
-                       resp_log_server=LogServerResp,
+                       log_server=LogServer,
                        adtype=AdType
                 }) ->
   % display adtype only for one proxy.
@@ -258,7 +250,18 @@ if Function =:= notify ->
           lager:debug("~p: Thrift cast finish with error: ~p.", [ProxyName,
             Error]),
           Error
-      end;
+      end,
+    case ThriftResponse of
+      ok ->
+        % log the results
+        lager:debug("~p: Log request and response.", [ProxyName]),
+        erlterm2file:log(LogServer, 
+          #fun_call{adtype=AdType, fct=Function, args=Args, 
+            resp=ThriftResponse});
+      _Else ->
+        ok
+    end;
+
 true ->
   
   % templated after make_call in ox_broker_client
@@ -287,9 +290,9 @@ true ->
       ok;
     _Else ->
       lager:debug("~p: Log request and response.", [ProxyName]),
-      erlterm2file:log(LogServerReq, 
-        #fun_call{adtype=AdType, fct=Function, args=Args}),
-      erlterm2file:log(LogServerResp, ThriftResponse)
+      erlterm2file:log(LogServer, 
+        #fun_call{adtype=AdType, fct=Function, args=Args, 
+          resp={reply, ThriftResponse}})
   end
 
 end,
