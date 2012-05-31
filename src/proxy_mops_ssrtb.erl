@@ -11,6 +11,9 @@
 
 -module(proxy_mops_ssrtb).
 
+%% ssRtbAuctionContext record
+-include_lib( "ssrtb_thrift_erl/include/ssrtb_service_types.hrl").
+
 %% User defined macros:
 -define(THRIFT_SVC, ssRtbService_thrift).
 
@@ -56,11 +59,23 @@ get_adtype() ->
 %%====================================================================
 % Trim away timestamp, trax.id, etc. Hack hack hack!
 trim_args(Fun, Args) ->
-  lager:debug("Entering ~p:trim_args/1.", [?MODULE]),
-  KeysToRemove = [<<"ox.internal.timestamp">>,<<"ox.internal.trax_id">>],
+  lager:debug("Entering ~p:trim_args/1. Function = ~p", [?MODULE, Fun]),
+  %lager:debug("Args = ~p.", [Args]),
   if 
-    Fun =:= getOpportunities ->
-      gen_thrift_proxy:trim_args(Args, 1, KeysToRemove)
+    Fun =:= solicit_bids ->
+      KeysToRemove = [<<"ox.internal.timestamp">>, 
+                      <<"ox.internal.trax_id">>,
+                      <<"ox.publisher.floor">>,
+                      <<"ox.internal.market.auction_sequence">>],
+      AuctionContext = element(2, Args),
+      ContextDict = AuctionContext#ssRtbAuctionContext.req_context,
+      TrimmedDict = 
+         gen_thrift_proxy:trim_args_helper(ContextDict, KeysToRemove),
+      setelement(2, Args,
+         AuctionContext#ssRtbAuctionContext{req_context=TrimmedDict});
+   Fun =:= notify ->
+      % Don't do anything for now.
+      Args
   end.
 
 %%====================================================================
@@ -68,12 +83,7 @@ trim_args(Fun, Args) ->
 %%====================================================================
 handle_function (Function, Args) when is_atom(Function), is_tuple(Args) ->
   lager:info("~p:handle_function -- Function = ~p.", [?MODULE, Function]),
-
-  if Function =:= notify ->
-    gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args);
-  true ->
-    {reply, gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args)}
-  end.
+  gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args).
 
 stop(Server) ->
   thrift_socket_server:stop(Server),

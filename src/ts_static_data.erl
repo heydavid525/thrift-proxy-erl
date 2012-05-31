@@ -96,14 +96,12 @@ handle_call({lookup, fun_args, Fun, TrimmedArgs}, _From, Tid) ->
       #fun_args{fct=Fun, trimmed_args=TrimmedArgs}),
     if 
         LookUpRes =:= [] ->
-            lager:warning("No matching key in ets. Key = ~p", 
-              [#fun_args{fct=Fun, trimmed_args=TrimmedArgs}]);
+            {error, keynotfound};
         true ->
-            ok
-    end,
-    % Return just the object (not list).
-    Res = lists:nth(1, LookUpRes),
-    {reply, Res#fun_call.resp, Tid};
+            ok,
+            Res = lists:nth(1, LookUpRes),
+            {reply, Res#fun_call.resp, Tid}
+    end;
 
 % Return the Thrift (untrimmed) argument
 handle_call({lookup, adtype_fct, AdType, Fun}, _From, Tid) ->
@@ -111,7 +109,8 @@ handle_call({lookup, adtype_fct, AdType, Fun}, _From, Tid) ->
                   #fun_call{adtype=AdType, fa=#fun_args{fct=Fun, _='_'}, _='_'}),
     if 
         LookUpRes =:= [] ->
-            lager:warning("No matching key in ets.");
+            lager:warning("No matching key in ets. AdType = ~p, Fun = ~p",
+                          [AdType, Fun]);
         true ->
             ok
     end,

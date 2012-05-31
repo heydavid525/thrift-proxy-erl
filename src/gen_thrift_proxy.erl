@@ -20,7 +20,8 @@
          get_adtype/1]).
 
 %% Utility API
--export([trim_args/3]).
+-export([trim_args/3,
+         trim_args_helper/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -69,13 +70,24 @@ get_adtype(ServerName) ->
 %%====================================================================
 
 %% The DictN-th element of tuple Arg is the context dictionary. Args 
-%% Need to contain KeysToRemove (list).
+%% Need to contain KeysToRemove (list) or it will lager a warning.
 %% The returned TrimmedArgs will have KeysToRemove erased.
-trim_args(Args, DictN, KeysToRemove) 
+trim_args(Args, DictN, KeysToRemove)
     when is_tuple(Args) and is_integer(DictN) and is_list(KeysToRemove) ->
-
   % Get context dictionary from tuple
-  Dict = lists:nth(DictN, tuple_to_list(Args)),
+  Dict = element(DictN, Args),
+
+  % Trim dictionary
+  TrimmedDict = trim_args_helper(Dict, KeysToRemove), 
+
+  % Put the trimmed dictionary back to 
+  setelement(DictN, Args, TrimmedDict).
+
+
+%% trim_args_helper is used instead of trim_args when Args is not in 
+%% standard format (e.g. proxy_mops_ssrtb)
+trim_args_helper(Dict, KeysToRemove) 
+    when is_list(KeysToRemove) ->
 
   % Erase the item from dictionary D if the key K present; give warning 
   % if it's not.
@@ -90,8 +102,7 @@ trim_args(Args, DictN, KeysToRemove)
       end
     end,
 
-  TrimmedDict = lists:foldl(CheckErase, Dict, KeysToRemove),
-  setelement(DictN, Args, TrimmedDict).
+  lists:foldl(CheckErase, Dict, KeysToRemove).
 
 %%====================================================================
 %% gen_server callbacks
@@ -296,7 +307,16 @@ replay_fun_call(Function, Args,
              [ProxyName, Function]),
   % Trim away timestamp, trax.id, etc
   TrimmedArgs = ProxyName:trim_args(Function, Args),
-  ts_static_data:lookup(LogServer, fun_args, Function, TrimmedArgs).
+  ThriftResponse = 
+    ts_static_data:lookup(LogServer, fun_args, Function, TrimmedArgs),
+
+  case ThriftResponse of
+    {error, _Reason} ->
+        lager:warning("No matching key in ets. Key(fun_args) = ~p", 
+          [#fun_args{fct=Function, trimmed_args=TrimmedArgs}]);
+    Else ->
+        Else
+  end.
 
 
 
