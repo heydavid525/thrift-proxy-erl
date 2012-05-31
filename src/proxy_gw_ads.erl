@@ -18,8 +18,12 @@
 
 %% API
 -export([start_link/0,
+         start_link/1,
          get_adtype/0,
          set_adtype/1]).
+
+%% gen_thrift_proxy callbacks
+-export([trim_args/2]).
 
 %% Thrift callbacks
 -export([stop/1,
@@ -31,9 +35,13 @@
 %%====================================================================
 %% API
 %%====================================================================
+% Default replay to false (a normal proxy)
 start_link() ->
+  start_link(false).
+
+start_link(Replay) when is_boolean(Replay) ->
   gen_thrift_proxy:start_link(?SERVER_NAME, 
-      ?MODULE, ?SERVER_PORT, ?CLIENT_PORT, ?THRIFT_SVC).
+      ?MODULE, ?SERVER_PORT, ?CLIENT_PORT, ?THRIFT_SVC, Replay).
 
 set_adtype(NewAdType) ->
   gen_thrift_proxy:set_adtype(?SERVER_NAME, NewAdType).
@@ -42,11 +50,19 @@ get_adtype() ->
   gen_thrift_proxy:get_adtype(?SERVER_NAME).
 
 %%====================================================================
+%% gen_thrift_proxy callback functions
+%%====================================================================
+% Gateway request to Ad server does not contain timestamp, etc, and is
+% thus invariant for the same ad request.
+trim_args(_Fun, Args) ->
+  Args.
+
+%%====================================================================
 %% Thrift callback functions
 %%====================================================================
 handle_function (Function, Args) when is_atom(Function), is_tuple(Args) ->
   lager:info("~p:handle_function -- Function = ~p.", [?MODULE, Function]),
-  {reply, gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args)}.
+  gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args).
 
 stop(Server) ->
   thrift_socket_server:stop(Server),

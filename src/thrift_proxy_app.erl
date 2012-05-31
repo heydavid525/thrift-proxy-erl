@@ -15,7 +15,7 @@
          set_adtype/1,
          get_adtype/0,
          stop/0,
-         get_proxy_list/0]).
+         get_env_var/1]).
 
 %% Application callbacks
 -export([start/2, stop/1]).
@@ -40,19 +40,24 @@ start_all() ->
 % Change the ad type for all proxy gen_server.
 set_adtype(NewAdType) ->
   [ Mod:set_adtype(NewAdType) 
-    || Mod <- get_proxy_list()
+    || Mod <- get_env_var(proxy_list)
   ].
 
 get_adtype() ->
   Result = [ Mod:get_adtype() 
-    || Mod <- get_proxy_list()
+    || Mod <- get_env_var(proxy_list)
   ],
   print_list_format(Result).
 
-get_proxy_list() ->
-  {ok, ProxyList} = application:get_env(?APP_NAME, proxy_list),
-  lager:debug("ProxyList = ~p", [ProxyList]),
-  ProxyList.
+%get_proxy_list() ->
+%  {ok, ProxyList} = application:get_env(?APP_NAME, proxy_list),
+%  lager:debug("ProxyList = ~p", [ProxyList]),
+%  ProxyList.
+
+get_env_var(Var) when is_atom(Var) ->
+  {ok, Val} = application:get_env(?APP_NAME, Var),
+  Val.
+  
 
 stop() ->
   application:stop(?APP_NAME).

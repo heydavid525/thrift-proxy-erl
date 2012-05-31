@@ -13,23 +13,28 @@
 -include("ts_static_data_types.hrl").
 
 %% API
--export([start_link/5, 
+-export([start_link/6, 
          stop/1,
          handle_function/3,
          set_adtype/2,
          get_adtype/1]).
 
+%% Utility API
+-export([trim_args/3]).
+
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
         terminate/2, code_change/3]).
 
--record(state, {proxy_name,
-                proxy_client_name,
-                thrift_svc,
-                server_port,
-                client_port,
-                log_server,
-                adtype = afr_flash  % default ad type.
+-record(state, 
+        {proxy_name,
+         proxy_client_name,
+         thrift_svc,
+         server_port,
+         client_port,
+         log_server,
+         replay,           % replay recorded Thrift call if true.
+         adtype
         }).
 
 %%====================================================================
@@ -40,9 +45,9 @@
 %% Description: Starts the server
 %%--------------------------------------------------------------------
 % Proxy needs to be the module name.
-start_link(ServerName, Proxy, ServerPort, ClientPort, ThriftSvc) ->
+start_link(ServerName, Proxy, ServerPort, ClientPort, ThriftSvc, Replay) ->
   GenServOpts = [],
-  InitArgs = {Proxy, ServerPort, ClientPort, ThriftSvc},
+  InitArgs = {Proxy, ServerPort, ClientPort, ThriftSvc, Replay},
   gen_server:start_link({local, ServerName}, ?MODULE, InitArgs, 
     GenServOpts).
 
@@ -60,6 +65,35 @@ get_adtype(ServerName) ->
   gen_server:call(ServerName, get_adtype).
 
 %%====================================================================
+%% Utility API
+%%====================================================================
+
+%% The DictN-th element of tuple Arg is the context dictionary. Args 
+%% Need to contain KeysToRemove (list).
+%% The returned TrimmedArgs will have KeysToRemove erased.
+trim_args(Args, DictN, KeysToRemove) 
+    when is_tuple(Args) and is_integer(DictN) and is_list(KeysToRemove) ->
+
+  % Get context dictionary from tuple
+  Dict = lists:nth(DictN, tuple_to_list(Args)),
+
+  % Erase the item from dictionary D if the key K present; give warning 
+  % if it's not.
+  CheckErase = 
+    fun(K, D) ->
+      case dict:is_key(K, D) of
+        true ->
+          dict:erase(K, D);
+        _ ->
+          lager:warning("Key ~p does not exist.", [K]),
+          D
+      end
+    end,
+
+  TrimmedDict = lists:foldl(CheckErase, Dict, KeysToRemove),
+  setelement(DictN, Args, TrimmedDict).
+
+%%====================================================================
 %% gen_server callbacks
 %%====================================================================
 %%--------------------------------------------------------------------
@@ -69,12 +103,11 @@ get_adtype(ServerName) ->
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
-init({Proxy, ServerPort, ClientPort, ThriftSvc}) ->
+init({Proxy, ServerPort, ClientPort, ThriftSvc, Replay}) ->
   
   process_flag(trap_exit, true),
 
   % 4 servers are to be created with monitors.
-  %ProxyServerName   =  list_to_atom(atom_to_list(Proxy) ++ "_server"),
   ProxyClientName   =  list_to_atom(atom_to_list(Proxy) ++ "_client"),
   LogServerName  =  list_to_atom(atom_to_list(Proxy) ++ "_log"),
 
@@ -83,7 +116,8 @@ init({Proxy, ServerPort, ClientPort, ThriftSvc}) ->
                  thrift_svc         = ThriftSvc,
                  server_port        = ServerPort,
                  client_port        = ClientPort,
-                 log_server         = LogServerName},
+                 log_server         = LogServerName,
+                 replay             = Replay},
 
   start_proxy(State), % start_proxy does not modify State
   lager:debug("Proxy server ~p init/1 finished.", [Proxy]),
@@ -101,13 +135,19 @@ init({Proxy, ServerPort, ClientPort, ThriftSvc}) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
-handle_call({handle_function, Fun, Args}, _From, State) ->
+handle_call({handle_function, Fun, Args}, _From, State = #state{replay = false}) ->
     {reply, forward_fun_call(Fun, Args, State), State};
+
+handle_call({handle_function, Fun, Args}, _From, State) ->
+    {reply, replay_fun_call(Fun, Args, State), State};
+
 handle_call({set_adtype, NewAdType}, _From, State) ->
     {reply, ok, State#state{adtype=NewAdType}};
+
 handle_call(get_adtype, _From, State=#state{proxy_name=Proxy, adtype=AdType}) ->
     Ret = string_format("~p -- adtype = ~p", [Proxy, AdType]),
     {reply, Ret, State};
+    
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -160,7 +200,8 @@ start_proxy(#state{proxy_name           = ProxyName,
                    thrift_svc           = ThriftSvc,
                    server_port          = ServerPort,
                    client_port          = ClientPort,
-                   log_server           = LogServer
+                   log_server           = LogServer,
+                   replay               = Replay
             }) ->
   
   %% IsFramed should be true except for ssRtbService_thrift, which uses
@@ -173,9 +214,9 @@ start_proxy(#state{proxy_name           = ProxyName,
         true
     end,
 
-  lager:debug("~p:start_proxy -- opening thrift socket on port ~p, Thrift
-service=~p, handler=~p, framed=~p.",
-    [?MODULE, ServerPort, ThriftSvc, ProxyName, IsFramed]),
+  lager:debug("~p:start_proxy -- opening thrift socket on port ~p, " ++ 
+              "Thrift service=~p, handler=~p, framed=~p.",
+              [?MODULE, ServerPort, ThriftSvc, ProxyName, IsFramed]),
 
   % Start the server
   {ok, ServerPid} = thrift_socket_server:start (
@@ -195,53 +236,83 @@ service=~p, handler=~p, framed=~p.",
   link(ServerPid),
   lager:debug("Thrift socket opened."),
   
-  Args = [ localhost,
-           ClientPort,
-           ThriftSvc,
-           [ {framed, IsFramed} ], % thrift options
-           _ReconnMin = 250,                 % ReconnMin
-           _ReconnMax = 60*1000,             % ReconnMax
-           _MondemandProgId = ProxyName ], 
+  if 
+      Replay ->
+        % Read the recorded Thrift call; no need to connect to downstream server.
+        lager:debug("Start proxy to replay."),
+        
+        % Locate the recorded file
+        RecDir = thrift_proxy_app:get_env_var(rec_log_dir),
+        LogFile = 
+          filename:join(RecDir, atom_to_list(ProxyName) ++ ".log"),
+        ts_static_data:start_link(LogServer, LogFile);
+        
+      true ->
+        % connect to downstream server through Thrift, open file for
+        % recording.
+        lager:debug("Start proxy to transmit (no replay)."),
+  
+        % Locate the log file
+        LogDir = thrift_proxy_app:get_env_var(log_dir),
+        LogFile = 
+          filename:join(LogDir, atom_to_list(ProxyName) ++ ".log"),
+        % Open file to read and append.
+        erlterm2file:start_link(LogServer, LogFile),
+    
+          Args = [ localhost,
+                   ClientPort,
+                   ThriftSvc,
+                   [ {framed, IsFramed} ], % thrift options
+                   _ReconnMin = 250,                 % ReconnMin
+                   _ReconnMax = 60*1000,             % ReconnMax
+                   _MondemandProgId = ProxyName ], 
 
-  %% Use gen_server_pool so we can name the gen_server ClientPoolId.
-  %% (ox_thrift_conn doesn't allow user-defined server name.)
+          %% Use gen_server_pool so we can name the gen_server ClientPoolId.
+          %% (ox_thrift_conn doesn't allow user-defined server name.)
 
-  PoolOpts = [ { max_pool_size, 1 },
-               { idle_timeout, 60*60 },
-               { max_queue, 100 },
-               { prog_id, ProxyName },  % For mondemand
-               { pool_id, ProxyClientName} ],
+          PoolOpts = [ { max_pool_size, 1 },
+                       { idle_timeout, 60*60 },
+                       { max_queue, 100 },
+                       { prog_id, ProxyName },  % For mondemand
+                       { pool_id, ProxyClientName} ],
 
-  %% Ignore returned Pid. Will use ClientPoolId to call the client
-  %% gen_server(_pool).
-  _ClientPid = gen_server_pool:start_link( { local, ProxyClientName }, 
-      ox_thrift_conn, Args, [], PoolOpts ),
+          %% Ignore returned Pid. Will use ClientPoolId to call the client
+          %% gen_server(_pool).
+          _ClientPid = gen_server_pool:start_link( { local, ProxyClientName }, 
+              ox_thrift_conn, Args, [], PoolOpts ),
 
-  lager:debug("ox_thrift_conn server opened."),
-
-  %% Start the logging facilities
-  LogDir = get_env_var(log_dir),
-  LogFile = 
-    filename:join(LogDir, atom_to_list(ProxyName) ++ ".log"),
-  erlterm2file:start_link(LogServer, LogFile),
+          lager:debug("ox_thrift_conn server opened.")
+  end,
 
   ok.
 
+%%--------------------------------------------------------------------
+%% Replay the recorded call.
+replay_fun_call(Function, Args,
+                #state{proxy_name         = ProxyName,
+                       log_server         = LogServer}) ->
 
-%%====================================================================
-%% Private Functions 
-%%====================================================================
+  lager:info("Proxy ~p replay Thrift response to fun ~p", 
+             [ProxyName, Function]),
+  % Trim away timestamp, trax.id, etc
+  TrimmedArgs = ProxyName:trim_args(Function, Args),
+  ts_static_data:lookup(LogServer, fun_args, Function, TrimmedArgs).
+
+
+
+%%--------------------------------------------------------------------
 %% Forward the call and record the Thrift request and response.
 forward_fun_call(Function, Args,
-                #state{proxy_name=ProxyName,
-                       proxy_client_name=ProxyClientName,
-                       log_server=LogServer,
-                       adtype=AdType
+                #state{proxy_name         = ProxyName,
+                       proxy_client_name  = ProxyClientName,
+                       log_server         = LogServer,
+                       adtype             = AdType
                 }) ->
   % display adtype only for one proxy.
   if ProxyName =:= proxy_gw_ads -> lager:info("adtype = ~p.", [AdType]);
      true -> ok
   end,
+
   
 % noifty is a cast function
 if Function =:= notify ->
@@ -261,9 +332,11 @@ if Function =:= notify ->
       ok ->
         % log the results
         lager:debug("~p: Log request and response.", [ProxyName]),
+        TrimmedArgs = ProxyName:trim_args(Function, Args),
         erlterm2file:log(LogServer, 
-          #fun_call{adtype=AdType, fct=Function, args=Args, 
-            resp=ThriftResponse});
+          #fun_call{adtype=AdType, 
+            fa=#fun_args{fct=Function, trimmed_args=TrimmedArgs}, 
+            full_args=Args, resp=ThriftResponse});
       _Else ->
         ok
     end;
@@ -278,7 +351,7 @@ true ->
       tuple_to_list(Args), Timeout) of
       {ok, T} -> 
         lager:debug("~p: Thrift call finish normally.", [ProxyName]),
-        T;
+        {reply, T};
       {_Error, {timeout, _CallStack}} ->
         lager:error("~p: Thrift call finish WITH ERROR: timeout.", [ProxyName]),
         {error, timeout};
@@ -296,20 +369,18 @@ true ->
       ok;
     _Else ->
       lager:debug("~p: Log request and response.", [ProxyName]),
-      erlterm2file:log(LogServer, 
-        #fun_call{adtype=AdType, fct=Function, args=Args, 
-          resp={reply, ThriftResponse}})
+        TrimmedArgs = ProxyName:trim_args(Function, Args),
+        erlterm2file:log(LogServer, 
+          #fun_call{adtype=AdType, 
+            fa=#fun_args{fct=Function, trimmed_args=TrimmedArgs}, 
+            full_args=Args, resp=ThriftResponse})
   end
 
 end,
 
   ThriftResponse.
 
-%% Get application environment variables.
-get_env_var(Var) ->
-  {ok, Val} = application:get_env(Var),
-  Val.
-
+%%--------------------------------------------------------------------
 %% string_format/2
 %% Like io:format except it returns the evaluated string rather than write
 %% it to standard output.
