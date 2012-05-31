@@ -12,14 +12,16 @@
 -module(proxy_mops_ssrtb).
 
 %% User defined macros:
--define(SERVER_PORT, 12365).
--define(CLIENT_PORT, 8703).
 -define(THRIFT_SVC, ssRtbService_thrift).
 
 %% API
 -export([start_link/0,
+         start_link/1,
          get_adtype/0,
          set_adtype/1]).
+
+%% gen_thrift_proxy callbacks
+-export([trim_args/2]).
 
 %% Thrift callbacks
 -export([stop/1,
@@ -31,15 +33,35 @@
 %%====================================================================
 %% API
 %%====================================================================
+% Default replay to false (a normal proxy)
 start_link() ->
+  start_link(false).
+
+start_link(Replay) when is_boolean(Replay) ->
+  ServerPortEnv = list_to_atom(atom_to_list(?MODULE) ++ "_server_port"),
+  ServerPort = thrift_proxy_app:get_env_var(ServerPortEnv),
+  ClientPortEnv = list_to_atom(atom_to_list(?MODULE) ++ "_client_port"),
+  ClientPort = thrift_proxy_app:get_env_var(ClientPortEnv),
   gen_thrift_proxy:start_link(?SERVER_NAME, 
-      ?MODULE, ?SERVER_PORT, ?CLIENT_PORT, ?THRIFT_SVC).
+      ?MODULE, ServerPort, ClientPort, ?THRIFT_SVC, Replay).
 
 set_adtype(NewAdType) ->
   gen_thrift_proxy:set_adtype(?SERVER_NAME, NewAdType).
 
 get_adtype() ->
   gen_thrift_proxy:get_adtype(?SERVER_NAME).
+
+%%====================================================================
+%% gen_thrift_proxy callback functions
+%%====================================================================
+% Trim away timestamp, trax.id, etc. Hack hack hack!
+trim_args(Fun, Args) ->
+  lager:debug("Entering ~p:trim_args/1.", [?MODULE]),
+  KeysToRemove = [<<"ox.internal.timestamp">>,<<"ox.internal.trax_id">>],
+  if 
+    Fun =:= getOpportunities ->
+      gen_thrift_proxy:trim_args(Args, 1, KeysToRemove)
+  end.
 
 %%====================================================================
 %% Thrift callback functions

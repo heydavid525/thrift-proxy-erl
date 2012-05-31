@@ -1,0 +1,40 @@
+{application,thrift_proxy_erl,
+    [{description,"A thrift proxy"},
+    {vsn,"0.0.0"},
+    {modules,[erlterm2file,
+        proxy_gw_ads]},
+    {registered,[]},
+    {applications,[kernel, 
+                   stdlib, 
+                   mondemand, 
+                   oxcon, 
+                   lager]},
+    {env,[{proxy_list, [proxy_gw_ads,
+                        proxy_ads_mds,
+                        proxy_mds_mops
+                        % proxy_mops_ssrtb
+                       ]},
+
+          % The proxy port numbers
+          {proxy_gw_ads_server_port, 8700},
+          {proxy_gw_ads_client_port, 8082},
+          {proxy_ads_mds_server_port, 8701},
+          {proxy_ads_mds_client_port, 12470},
+          {proxy_mds_mops_server_port, 12521},
+          {proxy_mds_mops_client_port, 8710},
+          {proxy_mops_ssrtb_server_port, 12365},
+          {proxy_mops_ssrtb_client_port, 8703},
+
+          % log configurations
+          {log_level, debug},
+          {log_dir, "/home/produser/.thrift_proxy"},
+          {rec_log_dir, "/home/produser/.thrift_proxy/recording"},
+
+          % replay setting
+          {proxy_gw_ads_replay, false},
+          {proxy_ads_mds_replay, false},
+          {proxy_mds_mops_replay, true},
+          {proxy_mops_ssrtb_replay, false}
+          ]},
+    {mod,{thrift_proxy_app,[]}}
+    ]}.

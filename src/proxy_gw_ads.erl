@@ -12,8 +12,6 @@
 -module(proxy_gw_ads).
 
 %% User defined macros:
--define(SERVER_PORT, 8700).
--define(CLIENT_PORT, 8082).
 -define(THRIFT_SVC, deliveryService_thrift).
 
 %% API
@@ -40,8 +38,12 @@ start_link() ->
   start_link(false).
 
 start_link(Replay) when is_boolean(Replay) ->
+  ServerPortEnv = list_to_atom(atom_to_list(?MODULE) ++ "_server_port"),
+  ServerPort = thrift_proxy_app:get_env_var(ServerPortEnv),
+  ClientPortEnv = list_to_atom(atom_to_list(?MODULE) ++ "_client_port"),
+  ClientPort = thrift_proxy_app:get_env_var(ClientPortEnv),
   gen_thrift_proxy:start_link(?SERVER_NAME, 
-      ?MODULE, ?SERVER_PORT, ?CLIENT_PORT, ?THRIFT_SVC, Replay).
+      ?MODULE, ServerPort, ClientPort, ?THRIFT_SVC, Replay).
 
 set_adtype(NewAdType) ->
   gen_thrift_proxy:set_adtype(?SERVER_NAME, NewAdType).
