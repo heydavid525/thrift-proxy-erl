@@ -38,15 +38,15 @@
 %%====================================================================
 % Default replay to false (a normal proxy)
 start_link() ->
-  start_link(false).
+  start_link(proxy).
 
-start_link(Replay) when is_boolean(Replay) ->
+start_link(Mode) ->
   ServerPortEnv = list_to_atom(atom_to_list(?MODULE) ++ "_server_port"),
   ServerPort = thrift_proxy_app:get_env_var(ServerPortEnv),
   ClientPortEnv = list_to_atom(atom_to_list(?MODULE) ++ "_client_port"),
   ClientPort = thrift_proxy_app:get_env_var(ClientPortEnv),
   gen_thrift_proxy:start_link(?SERVER_NAME, 
-      ?MODULE, ServerPort, ClientPort, ?THRIFT_SVC, Replay).
+      ?MODULE, ServerPort, ClientPort, ?THRIFT_SVC, Mode).
 
 set_adtype(NewAdType) ->
   gen_thrift_proxy:set_adtype(?SERVER_NAME, NewAdType).
@@ -83,7 +83,13 @@ trim_args(Fun, Args) ->
 %%====================================================================
 handle_function (Function, Args) when is_atom(Function), is_tuple(Args) ->
   lager:info("~p:handle_function -- Function = ~p.", [?MODULE, Function]),
-  gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args).
+  if 
+      Function =:= notify ->
+        %% notify is a cast function
+        gen_thrift_proxy:handle_function_cast(?SERVER_NAME, Function, Args);
+      true ->
+        gen_thrift_proxy:handle_function(?SERVER_NAME, Function, Args)
+  end.
 
 stop(Server) ->
   thrift_socket_server:stop(Server),

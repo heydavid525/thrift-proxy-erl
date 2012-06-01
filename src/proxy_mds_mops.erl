@@ -18,7 +18,8 @@
 -export([start_link/0,
          start_link/1,
          get_adtype/0,
-         set_adtype/1]).
+         set_adtype/1,
+         make_request/1]).
 
 %% gen_thrift_proxy callbacks
 -export([trim_args/2]).
@@ -35,21 +36,26 @@
 %%====================================================================
 % Default replay to false (a normal proxy)
 start_link() ->
-  start_link(false).
+  start_link(proxy).
 
-start_link(Replay) when is_boolean(Replay) ->
+start_link(Mode) ->
   ServerPortEnv = list_to_atom(atom_to_list(?MODULE) ++ "_server_port"),
   ServerPort = thrift_proxy_app:get_env_var(ServerPortEnv),
   ClientPortEnv = list_to_atom(atom_to_list(?MODULE) ++ "_client_port"),
   ClientPort = thrift_proxy_app:get_env_var(ClientPortEnv),
   gen_thrift_proxy:start_link(?SERVER_NAME, 
-      ?MODULE, ServerPort, ClientPort, ?THRIFT_SVC, Replay).
+      ?MODULE, ServerPort, ClientPort, ?THRIFT_SVC, Mode).
 
 set_adtype(NewAdType) ->
   gen_thrift_proxy:set_adtype(?SERVER_NAME, NewAdType).
 
 get_adtype() ->
   gen_thrift_proxy:get_adtype(?SERVER_NAME).
+
+make_request(AdType) ->
+  %% Currently we are not checking the response.
+  gen_thrift_proxy:make_request_call(?SERVER_NAME, AdType, getOpportunities),
+  ok.
 
 %%====================================================================
 %% gen_thrift_proxy callback functions

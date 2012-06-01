@@ -42,9 +42,9 @@ init([]) ->
 
 %% Since all 4 proxies are similar, DRY out the code.
 generate_child_spec(Module) ->
-  ReplayVar = list_to_atom(atom_to_list(Module) ++ "_replay"),
-  Replay = thrift_proxy_app:get_env_var(ReplayVar),
-  lager:info("proxy ~p has replay mode = ~p", [Module, Replay]),
-  StartLinkArgs = [Replay],
+  ModeVar = list_to_atom(atom_to_list(Module) ++ "_mode"),
+  Mode = thrift_proxy_app:get_env_var(ModeVar),
+  lager:info("proxy ~p has mode = ~p", [Module, Mode]),
+  StartLinkArgs = [Mode],
   {Module, {Module, start_link, StartLinkArgs},
    permanent, 20000, worker, [Module]}.

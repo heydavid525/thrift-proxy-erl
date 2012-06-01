@@ -67,7 +67,7 @@ init(FileName) ->
     process_flag(trap_exit, true),
 
     Tid = ets:new(dummy_table_name, 
-            [set, named_table,
+            [set, %named_table,
             {keypos, #fun_call.fa}, % Primary key is fct_args pair.
             {read_concurrency, true}]),
 

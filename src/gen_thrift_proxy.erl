@@ -16,8 +16,11 @@
 -export([start_link/6, 
          stop/1,
          handle_function/3,
+         handle_function_cast/3,
          set_adtype/2,
-         get_adtype/1]).
+         get_adtype/1,
+         make_request_cast/3,
+         make_request_call/3]).
 
 %% Utility API
 -export([trim_args/3,
@@ -34,7 +37,7 @@
          server_port,
          client_port,
          log_server,
-         replay,           % replay recorded Thrift call if true.
+         mode,           % mode = {proxy, replay_reply, replay_request} 
          adtype
         }).
 
@@ -46,24 +49,37 @@
 %% Description: Starts the server
 %%--------------------------------------------------------------------
 % Proxy needs to be the module name.
-start_link(ServerName, Proxy, ServerPort, ClientPort, ThriftSvc, Replay) ->
+start_link(ServerName, Proxy, ServerPort, ClientPort, ThriftSvc, Mode) ->
   GenServOpts = [],
-  InitArgs = {Proxy, ServerPort, ClientPort, ThriftSvc, Replay},
+  InitArgs = {Proxy, ServerPort, ClientPort, ThriftSvc, Mode},
   gen_server:start_link({local, ServerName}, ?MODULE, InitArgs, 
     GenServOpts).
 
 stop(ServerName) ->
     gen_server:call(ServerName, stop).
 
-% handle_function returns ThriftResponse.
+%% handle_function returns ThriftResponse.
 handle_function(ServerName, Fun, Args) ->
   gen_server:call(ServerName, {handle_function, Fun, Args}).
+
+%% handle_function_cast returns ThriftResponse. It uses ox_thrift_conn:cast 
+%% instead of ox_thrift_conn:call.
+handle_function_cast(ServerName, Fun, Args) ->
+  gen_server:call(ServerName, {handle_function_cast, Fun, Args}).
 
 set_adtype(ServerName, NewAdType) ->
   gen_server:call(ServerName, {set_adtype, NewAdType}).
 
 get_adtype(ServerName) ->
   gen_server:call(ServerName, get_adtype).
+
+%% Making request using ox_thrift_conn:call from recordings; return the 
+%% Thrift response.
+make_request_call(ServerName, AdType, Fun) ->
+  gen_server:call(ServerName, {make_request_call, AdType, Fun}).
+
+make_request_cast(ServerName, AdType, Fun) ->
+  gen_server:call(ServerName, {make_request_cast, AdType, Fun}).
 
 %%====================================================================
 %% Utility API
@@ -114,7 +130,7 @@ trim_args_helper(Dict, KeysToRemove)
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
-init({Proxy, ServerPort, ClientPort, ThriftSvc, Replay}) ->
+init({Proxy, ServerPort, ClientPort, ThriftSvc, Mode}) ->
   
   process_flag(trap_exit, true),
 
@@ -128,7 +144,7 @@ init({Proxy, ServerPort, ClientPort, ThriftSvc, Replay}) ->
                  server_port        = ServerPort,
                  client_port        = ClientPort,
                  log_server         = LogServerName,
-                 replay             = Replay},
+                 mode               = Mode},
 
   start_proxy(State), % start_proxy does not modify State
   lager:debug("Proxy server ~p init/1 finished.", [Proxy]),
@@ -146,19 +162,42 @@ init({Proxy, ServerPort, ClientPort, ThriftSvc, Replay}) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
-handle_call({handle_function, Fun, Args}, _From, State = #state{replay = false}) ->
-    {reply, forward_fun_call(Fun, Args, State), State};
 
-handle_call({handle_function, Fun, Args}, _From, State) ->
-    {reply, replay_fun_call(Fun, Args, State), State};
+%% Forward call only in proxy mode
+handle_call({handle_function, Fun, Args}, _From, State = #state{mode = proxy}) ->
+    {reply, forward_fun_call(Fun, Args, State, _LogResult = true), State};
 
+handle_call({handle_function_cast, Fun, Args}, _From, 
+      State = #state{mode = proxy}) ->
+    {reply, forward_fun_cast(Fun, Args, State, _LogResult = true), State};
+
+%% Replay Thrift response in replay_reply mode
+handle_call({handle_function, Fun, Args}, _From, 
+      State = #state{mode = replay_reply}) ->
+    {reply, replay_response(Fun, Args, State), State};
+
+handle_call({handle_function_cast, Fun, Args}, _From, 
+      State = #state{mode = replay_reply}) ->
+    {reply, replay_response(Fun, Args, State), State};
+
+%% Replay Thrift request in replay_request
+handle_call({make_request_call, AdType, Fun}, _From, 
+      State = #state{mode = replay_request}) ->
+    {reply, _ThriftResponse = replay_fun_call(AdType, Fun, State, call), State};
+    
+handle_call({make_request_cast, AdType, Fun}, _From, 
+      State = #state{mode = replay_request}) ->
+    {reply, _ThriftResponse = replay_fun_call(AdType, Fun, State, cast), State};
+
+%% AdType operations
 handle_call({set_adtype, NewAdType}, _From, State) ->
     {reply, ok, State#state{adtype=NewAdType}};
 
 handle_call(get_adtype, _From, State=#state{proxy_name=Proxy, adtype=AdType}) ->
     Ret = string_format("~p -- adtype = ~p", [Proxy, AdType]),
     {reply, Ret, State};
-    
+
+%% Anything else...
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -203,18 +242,42 @@ terminate(shutdown, State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+
+%%====================================================================
+%% Internal Functions 
+%%====================================================================
+
 %%--------------------------------------------------------------------
-%%% Internal functions
+%% Initialize proxy: 
+%%    1. Establishing server-side / client-side connection.
+%%    2. Create log server.
 %%--------------------------------------------------------------------
-start_proxy(#state{proxy_name           = ProxyName,
-                   proxy_client_name    = ProxyClientName,
-                   thrift_svc           = ThriftSvc,
-                   server_port          = ServerPort,
-                   client_port          = ClientPort,
-                   log_server           = LogServer,
-                   replay               = Replay
-            }) ->
-  
+start_proxy(State = #state{mode = Mode}) ->
+
+  case Mode of
+    proxy ->
+      open_server_socket(State),
+      connect_client(State);
+
+    replay_reply ->
+      open_server_socket(State);
+
+    replay_request ->
+      connect_client(State)
+  end,
+
+  % all 3 modes need log server (to write to or replay from)
+  start_log_server(State),
+  ok.
+
+
+%%--------------------------------------------------------------------
+%% Open the server-side Thrift socket
+%%--------------------------------------------------------------------
+open_server_socket(#state{proxy_name  = ProxyName,
+                          thrift_svc  = ThriftSvc,
+                          server_port = ServerPort
+                         }) ->
   %% IsFramed should be true except for ssRtbService_thrift, which uses
   %% unbuffered transport frame.
   IsFramed = 
@@ -224,10 +287,6 @@ start_proxy(#state{proxy_name           = ProxyName,
       _Else ->
         true
     end,
-
-  lager:debug("~p:start_proxy -- opening thrift socket on port ~p, " ++ 
-              "Thrift service=~p, handler=~p, framed=~p.",
-              [?MODULE, ServerPort, ThriftSvc, ProxyName, IsFramed]),
 
   % Start the server
   {ok, ServerPid} = thrift_socket_server:start (
@@ -245,75 +304,87 @@ start_proxy(#state{proxy_name           = ProxyName,
   % already restart itself when socket/acceptor dies, but this is just in 
   % case.
   link(ServerPid),
-  lager:debug("Thrift socket opened."),
-  
-  if 
-      Replay ->
-        % Read the recorded Thrift call; no need to connect to downstream server.
-        lager:debug("Start proxy to replay."),
-        
-        % Locate the recorded file
-        RecDir = thrift_proxy_app:get_env_var(rec_log_dir),
-        LogFile = 
-          filename:join(RecDir, atom_to_list(ProxyName) ++ ".log"),
-        ts_static_data:start_link(LogServer, LogFile);
-        
-      true ->
-        % connect to downstream server through Thrift, open file for
-        % recording.
-        lager:debug("Start proxy to transmit (no replay)."),
-  
-        % Locate the log file
-        LogDir = thrift_proxy_app:get_env_var(log_dir),
-        LogFile = 
-          filename:join(LogDir, atom_to_list(ProxyName) ++ ".log"),
-        % Open file to read and append.
-        erlterm2file:start_link(LogServer, LogFile),
-    
-          Args = [ localhost,
-                   ClientPort,
-                   ThriftSvc,
-                   [ {framed, IsFramed} ], % thrift options
-                   _ReconnMin = 250,                 % ReconnMin
-                   _ReconnMax = 60*1000,             % ReconnMax
-                   _MondemandProgId = ProxyName ], 
+  lager:debug("Proxy ~p opened thrift socket on port ~p, " ++ 
+              "Thrift service = ~p, handler = ~p, framed = ~p.",
+              [ProxyName, ServerPort, ThriftSvc, ProxyName, IsFramed]).
 
-          %% Use gen_server_pool so we can name the gen_server ClientPoolId.
-          %% (ox_thrift_conn doesn't allow user-defined server name.)
+%%--------------------------------------------------------------------
+%% Open the client-side connection through ox_thrift_conn
+%%--------------------------------------------------------------------
+connect_client(#state{proxy_name           = ProxyName,
+                      proxy_client_name    = ProxyClientName,
+                      thrift_svc           = ThriftSvc,
+                      client_port          = ClientPort}) ->
+  %% IsFramed should be true except for ssRtbService_thrift, which uses
+  %% unbuffered transport frame.
+  IsFramed = 
+    case ThriftSvc of
+      ssRtbService_thrift ->
+        false;
+      _Else ->
+        true
+    end,
 
-          PoolOpts = [ { max_pool_size, 1 },
-                       { idle_timeout, 60*60 },
-                       { max_queue, 100 },
-                       { prog_id, ProxyName },  % For mondemand
-                       { pool_id, ProxyClientName} ],
+  Args = [ localhost,
+           ClientPort,
+           ThriftSvc,
+           [ {framed, IsFramed} ], % thrift options
+           _ReconnMin = 250,                 % ReconnMin
+           _ReconnMax = 60*1000,             % ReconnMax
+           _MondemandProgId = ProxyName ], 
 
-          %% Ignore returned Pid. Will use ClientPoolId to call the client
-          %% gen_server(_pool).
-          _ClientPid = gen_server_pool:start_link( { local, ProxyClientName }, 
-              ox_thrift_conn, Args, [], PoolOpts ),
+  %% Use gen_server_pool so we can name the gen_server ClientPoolId.
+  %% (ox_thrift_conn doesn't allow user-defined server name.)
 
-          lager:debug("ox_thrift_conn server opened.")
-  end,
+  PoolOpts = [ { max_pool_size, 1 },
+               { idle_timeout, 60*60 },
+               { max_queue, 100 },
+               { prog_id, ProxyName },  % For mondemand
+               { pool_id, ProxyClientName} ],
 
-  ok.
+  %% Ignore returned Pid. Will use ClientPoolId to call the client
+  %% gen_server(_pool).
+  _ClientPid = gen_server_pool:start_link( { local, ProxyClientName }, 
+      ox_thrift_conn, Args, [], PoolOpts ),
+
+  lager:debug("ox_thrift_conn client opened at port ~p.", [ClientPort]).
+
+
+%%--------------------------------------------------------------------
+%% Start the log server, which records (write) in proxy mode, but replay
+%% (read) in either replay mode.
+%%--------------------------------------------------------------------
+start_log_server(#state{proxy_name = P, log_server = L, mode = M}) ->
+  % Locate the recorded file
+  RecDir = 
+    case M of 
+      proxy ->
+        thrift_proxy_app:get_env_var(log_dir);
+      _ReplayMode ->
+        thrift_proxy_app:get_env_var(rec_log_dir)
+    end,
+  LogFile = filename:join(RecDir, atom_to_list(P) ++ ".log"),
+  ts_static_data:start_link(L, LogFile).
+
 
 %%--------------------------------------------------------------------
 %% Replay the recorded call.
-replay_fun_call(Function, Args,
+%%--------------------------------------------------------------------
+replay_response(Fun, Args,
                 #state{proxy_name         = ProxyName,
                        log_server         = LogServer}) ->
 
-  lager:info("Proxy ~p replay Thrift response to fun ~p", 
-             [ProxyName, Function]),
+  lager:info("Proxy ~p replaying Thrift response to fun ~p", 
+             [ProxyName, Fun]),
   % Trim away timestamp, trax.id, etc
-  TrimmedArgs = ProxyName:trim_args(Function, Args),
+  TrimmedArgs = ProxyName:trim_args(Fun, Args),
   ThriftResponse = 
-    ts_static_data:lookup(LogServer, fun_args, Function, TrimmedArgs),
+    ts_static_data:lookup(LogServer, fun_args, Fun, TrimmedArgs),
 
   case ThriftResponse of
     {error, _Reason} ->
         lager:warning("No matching key in ets. Key(fun_args) = ~p", 
-          [#fun_args{fct=Function, trimmed_args=TrimmedArgs}]);
+          [#fun_args{fct=Fun, trimmed_args=TrimmedArgs}]);
     Else ->
         Else
   end.
@@ -322,52 +393,22 @@ replay_fun_call(Function, Args,
 
 %%--------------------------------------------------------------------
 %% Forward the call and record the Thrift request and response.
-forward_fun_call(Function, Args,
+%%--------------------------------------------------------------------
+forward_fun_call(Fun, Args,
                 #state{proxy_name         = ProxyName,
                        proxy_client_name  = ProxyClientName,
                        log_server         = LogServer,
                        adtype             = AdType
-                }) ->
-  % display adtype only for one proxy.
-  if ProxyName =:= proxy_gw_ads -> lager:info("adtype = ~p.", [AdType]);
-     true -> ok
-  end,
-
+                },
+                LogResult) when is_boolean(LogResult) ->
+  lager:info("~p making call: Fun = ~p, adtype = ~p.", 
+             [ProxyName, Fun, AdType]),
   
-% noifty is a cast function
-if Function =:= notify ->
-    lager:debug("notify function call."),
-    ThriftResponse =
-      case catch ox_thrift_conn:cast (ProxyClientName, Function,
-        tuple_to_list(Args)) of
-        ok ->
-          lager:debug("~p: Thrift cast finish normally.", [ProxyName]),
-          ok;
-        Error ->
-          lager:debug("~p: Thrift cast finish with error: ~p.", [ProxyName,
-            Error]),
-          Error
-      end,
-    case ThriftResponse of
-      ok ->
-        % log the results
-        lager:debug("~p: Log request and response.", [ProxyName]),
-        TrimmedArgs = ProxyName:trim_args(Function, Args),
-        erlterm2file:log(LogServer, 
-          #fun_call{adtype=AdType, 
-            fa=#fun_args{fct=Function, trimmed_args=TrimmedArgs}, 
-            full_args=Args, resp=ThriftResponse});
-      _Else ->
-        ok
-    end;
-
-true ->
-  
-  % templated after make_call in ox_broker_client
+  % gateway has the longest timeout (currently 5 seconds).
   {ok, Timeout} = oxcon:get_conf(ox_http_gateway, thrift_timeout),
-  %lager:debug("gateway timeout = ~p ms.", [Timeout]),
+
   ThriftResponse =
-    case catch ox_thrift_conn:call (ProxyClientName, Function,
+    case catch ox_thrift_conn:call (ProxyClientName, Fun,
       tuple_to_list(Args), Timeout) of
       {ok, T} -> 
         lager:debug("~p: Thrift call finish normally.", [ProxyName]),
@@ -383,22 +424,88 @@ true ->
         {error, Error}
     end,
   
-  %% Log only if the call finishes successfully.
-  case ThriftResponse of
-    {error, _} ->
-      ok;
+  % Log the result when ThriftResponse is good and LogResult is true.
+  case {ThriftResponse, LogResult} of
+    {{reply, _}, true} ->
+      record_results(LogServer, ProxyName, Fun, Args, AdType, 
+        ThriftResponse);
     _Else ->
-      lager:debug("~p: Log request and response.", [ProxyName]),
-        TrimmedArgs = ProxyName:trim_args(Function, Args),
-        erlterm2file:log(LogServer, 
-          #fun_call{adtype=AdType, 
-            fa=#fun_args{fct=Function, trimmed_args=TrimmedArgs}, 
-            full_args=Args, resp=ThriftResponse})
-  end
-
-end,
+      ok
+  end,
 
   ThriftResponse.
+
+
+%%--------------------------------------------------------------------
+%% Forward the cast call and record the Thrift request and response.
+%% review: This function is similar to forward_fun_call, but just different
+%%         enough that it's cleaner to be a separate function. Oh well....
+%%--------------------------------------------------------------------
+forward_fun_cast(Fun, Args,
+                #state{proxy_name         = ProxyName,
+                       proxy_client_name  = ProxyClientName,
+                       log_server         = LogServer,
+                       adtype             = AdType
+                }, 
+                LogResult) when is_boolean(LogResult) ->
+  ThriftResponse =
+    case catch ox_thrift_conn:cast (ProxyClientName, Fun,
+      tuple_to_list(Args)) of
+      ok ->
+        lager:debug("~p: Thrift cast finish normally.", [ProxyName]),
+        ok;
+      Error ->
+        lager:debug("~p: Thrift cast finish with error: ~p.", [ProxyName,
+          Error]),
+        Error
+    end,
+
+  % Log the result when ThriftResponse is good and LogResult is true.
+  case {ThriftResponse, LogResult} of
+    {ok, true} ->
+      record_results(LogServer, ProxyName, Fun, Args, AdType, 
+        ThriftResponse);
+    _Else ->
+      ok
+  end,
+  
+  ThriftResponse.
+
+
+%%--------------------------------------------------------------------
+%% Record the results.
+%%--------------------------------------------------------------------
+record_results(LogServer, ProxyName, Fun, Args, AdType, ThriftResponse) ->
+    % log the results
+    lager:debug("~p: Log request and response.", [ProxyName]),
+    TrimmedArgs = ProxyName:trim_args(Fun, Args),
+    erlterm2file:log(LogServer, 
+      #fun_call{adtype=AdType, 
+        fa=#fun_args{fct=Fun, trimmed_args=TrimmedArgs}, 
+        full_args=Args, resp=ThriftResponse}).
+
+
+
+%%--------------------------------------------------------------------
+%% Replay the Thrift request.
+%%--------------------------------------------------------------------
+replay_fun_call(AdType, Fun,
+                State = #state{log_server = LogServer},
+                CallType) ->
+
+  %% Get the Args
+  Args = ts_static_data:lookup(LogServer, adtype_fct, AdType, Fun),
+  %lager:debug("replaying function = ~p with args = ~p.", [Fun, Args]),
+  case CallType of 
+    call ->
+      forward_fun_call(Fun, Args, State#state{adtype=AdType}, 
+                       _LogResult = false);
+    cast ->
+      forward_fun_cast(Fun, Args, State#state{adtype=AdType}, 
+                       _LogResult = false)
+  end.
+  
+  
 
 %%--------------------------------------------------------------------
 %% string_format/2
@@ -409,5 +516,6 @@ end,
 %%   2. list of values to supply to format string.
 %% Returns:
 %%   Formatted string.
+%%--------------------------------------------------------------------
 string_format(Pattern, Values) ->
      lists:flatten(io_lib:format(Pattern, Values)).
