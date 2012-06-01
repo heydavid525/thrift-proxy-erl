@@ -164,43 +164,38 @@ init({Proxy, ServerPort, ClientPort, ThriftSvc, Mode}) ->
 %%--------------------------------------------------------------------
 
 %% Forward call only in proxy mode
-handle_call({handle_function, Fun, Args}, _From, State = #state{mode = proxy}) ->
-    {reply, forward_fun_call(Fun, Args, State, _LogResult = true), State};
+handle_call({handle_function, Fun, Args}, _From, S = #state{mode = proxy}) ->
+    {reply, forward_fun_call(Fun, Args, S, _LogResult = true), S};
 
-handle_call({handle_function_cast, Fun, Args}, _From, 
-      State = #state{mode = proxy}) ->
-    {reply, forward_fun_cast(Fun, Args, State, _LogResult = true), State};
+handle_call({handle_function_cast, Fun, Args}, _From, S = #state{mode = proxy}) ->
+    {reply, forward_fun_cast(Fun, Args, S, _LogResult = true), S};
 
 %% Replay Thrift response in replay_reply mode
-handle_call({handle_function, Fun, Args}, _From, 
-      State = #state{mode = replay_reply}) ->
-    {reply, replay_response(Fun, Args, State), State};
+handle_call({handle_function, Fun, Args}, _From, S = #state{mode = replay_reply}) ->
+    {reply, replay_response(Fun, Args, S), S};
 
-handle_call({handle_function_cast, Fun, Args}, _From, 
-      State = #state{mode = replay_reply}) ->
-    {reply, replay_response(Fun, Args, State), State};
+handle_call({handle_function_cast, Fun, Args}, _From, S = #state{mode = replay_reply}) ->
+    {reply, replay_response(Fun, Args, S), S};
 
 %% Replay Thrift request in replay_request
-handle_call({make_request_call, AdType, Fun}, _From, 
-      State = #state{mode = replay_request}) ->
-    {reply, _ThriftResponse = replay_fun_call(AdType, Fun, State, call), State};
+handle_call({make_request_call, AdType, Fun}, _From, S = #state{mode = replay_request}) ->
+    {reply, _ThriftResponse = replay_fun_call(AdType, Fun, S, call), S};
     
-handle_call({make_request_cast, AdType, Fun}, _From, 
-      State = #state{mode = replay_request}) ->
-    {reply, _ThriftResponse = replay_fun_call(AdType, Fun, State, cast), State};
+handle_call({make_request_cast, AdType, Fun}, _From, S = #state{mode = replay_request}) ->
+    {reply, _ThriftResponse = replay_fun_call(AdType, Fun, S, cast), S};
 
 %% AdType operations
-handle_call({set_adtype, NewAdType}, _From, State) ->
-    {reply, ok, State#state{adtype=NewAdType}};
+handle_call({set_adtype, NewAdType}, _From, S) ->
+    {reply, ok, S#state{adtype=NewAdType}};
 
-handle_call(get_adtype, _From, State=#state{proxy_name=Proxy, adtype=AdType}) ->
+handle_call(get_adtype, _From, S=#state{proxy_name=Proxy, adtype=AdType}) ->
     Ret = string_format("~p -- adtype = ~p", [Proxy, AdType]),
-    {reply, Ret, State};
+    {reply, Ret, S};
 
 %% Anything else...
-handle_call(_Request, _From, State) ->
+handle_call(_Request, _From, S) ->
     Reply = ok,
-    {reply, Reply, State}.
+    {reply, Reply, S}.
 
 %%--------------------------------------------------------------------
 %% Function: handle_cast(Msg, State) -> {noreply, State} |
@@ -306,7 +301,8 @@ open_server_socket(#state{proxy_name  = ProxyName,
   link(ServerPid),
   lager:debug("Proxy ~p opened thrift socket on port ~p, " ++ 
               "Thrift service = ~p, handler = ~p, framed = ~p.",
-              [ProxyName, ServerPort, ThriftSvc, ProxyName, IsFramed]).
+              [ProxyName, ServerPort, ThriftSvc, ProxyName, IsFramed]),
+  ok.
 
 %%--------------------------------------------------------------------
 %% Open the client-side connection through ox_thrift_conn
@@ -347,7 +343,8 @@ connect_client(#state{proxy_name           = ProxyName,
   _ClientPid = gen_server_pool:start_link( { local, ProxyClientName }, 
       ox_thrift_conn, Args, [], PoolOpts ),
 
-  lager:debug("ox_thrift_conn client opened at port ~p.", [ClientPort]).
+  lager:debug("ox_thrift_conn client opened at port ~p.", [ClientPort]),
+  ok.
 
 
 %%--------------------------------------------------------------------
@@ -414,16 +411,19 @@ forward_fun_call(Fun, Args,
     case catch ox_thrift_conn:call (ProxyClientName, Fun,
       tuple_to_list(Args), Timeout) of
       {ok, T} -> 
-        lager:debug("~p: Thrift call finish normally.", [ProxyName]),
+        lager:debug("~p: Thrift call ~p finish normally.", [ProxyName, Fun]),
         {reply, T};
       {_Error, {timeout, _CallStack}} ->
-        lager:error("~p: Thrift call finish WITH ERROR: timeout.", [ProxyName]),
+        lager:error("~p: Thrift call ~p finish WITH ERROR: timeout.",
+                    [ProxyName, Fun]),
         {error, timeout};
       {'EXIT', {{case_clause, {error,closed}},_}} ->
-        lager:error("~p: Thrift call finish WITH ERROR: closed.", [ProxyName]),
+        lager:error("~p: Thrift call ~p finish WITH ERROR: closed.",
+                    [ProxyName, Fun]),
         {error, closed};
       Error ->
-        lager:error("~p: Thrift call finish WITH ERROR: ~p.", [ProxyName, Error]),
+        lager:error("~p: Thrift call ~p finish WITH ERROR: ~p.", 
+                    [ProxyName, Fun, Error]),
         {error, Error}
     end,
   
@@ -451,15 +451,16 @@ forward_fun_cast(Fun, Args,
                        adtype             = AdType
                 }, 
                 LogResult) when is_boolean(LogResult) ->
+  lager:debug("proxy ~p enters forward_fun_cast", [ProxyName]),
   ThriftResponse =
     case catch ox_thrift_conn:cast (ProxyClientName, Fun,
       tuple_to_list(Args)) of
       ok ->
-        lager:debug("~p: Thrift cast finish normally.", [ProxyName]),
+        lager:debug("~p: Thrift cast ~p finish normally.", [ProxyName, Fun]),
         ok;
       Error ->
-        lager:debug("~p: Thrift cast finish with error: ~p.", [ProxyName,
-          Error]),
+        lager:debug("~p: Thrift cast ~p finish with error: ~p.", [ProxyName,
+          Fun, Error]),
         Error
     end,
 
@@ -471,6 +472,9 @@ forward_fun_cast(Fun, Args,
     _Else ->
       ok
   end,
+
+  lager:debug("forward_fun_cast ending. ThriftResponse = ~p",
+              [ThriftResponse]),
   
   ThriftResponse.
 
