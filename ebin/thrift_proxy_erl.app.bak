@@ -9,7 +9,7 @@
                    mondemand, 
                    oxcon, 
                    lager]},
-    {env,[{proxy_list, [proxy_gw_ads,
+    {env,[{proxy_list, [%proxy_gw_ads,
                         proxy_ads_mds,
                         proxy_mds_mops
                         % proxy_mops_ssrtb
@@ -22,19 +22,22 @@
           {proxy_ads_mds_client_port, 12470},
           {proxy_mds_mops_server_port, 12521},
           {proxy_mds_mops_client_port, 8710},
-          {proxy_mops_ssrtb_server_port, 12365},
-          {proxy_mops_ssrtb_client_port, 8703},
+          %{proxy_mops_ssrtb_server_port, 12365},
+          %{proxy_mops_ssrtb_client_port, 8703},
 
           % log configurations
           {log_level, debug},
           {log_dir, "/home/produser/.thrift_proxy"},
           {rec_log_dir, "/home/produser/.thrift_proxy/recording"},
 
-          % replay setting
-          {proxy_gw_ads_replay, false},
-          {proxy_ads_mds_replay, false},
-          {proxy_mds_mops_replay, true},
-          {proxy_mops_ssrtb_replay, false}
+          % mode can be {proxy, replay_reply, replay_request}
+          % proxy forwards the call and record it to file;
+          % replay_reply playback the Thrift response; 
+          % replay_request playback the Thrift request.
+          {proxy_gw_ads_mode, replay_request},
+          {proxy_ads_mds_mode, replay_request},
+          {proxy_mds_mops_mode, replay_reply},
+          {proxy_mops_ssrtb_mode, proxy}
           ]},
     {mod,{thrift_proxy_app,[]}}
     ]}.
