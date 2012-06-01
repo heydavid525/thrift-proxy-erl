@@ -355,16 +355,19 @@ connect_client(#state{proxy_name           = ProxyName,
 %% (read) in either replay mode.
 %%--------------------------------------------------------------------
 start_log_server(#state{proxy_name = P, log_server = L, mode = M}) ->
-  % Locate the recorded file
-  RecDir = 
-    case M of 
-      proxy ->
-        thrift_proxy_app:get_env_var(log_dir);
-      _ReplayMode ->
-        thrift_proxy_app:get_env_var(rec_log_dir)
-    end,
-  LogFile = filename:join(RecDir, atom_to_list(P) ++ ".log"),
-  ts_static_data:start_link(L, LogFile).
+
+  case M of 
+    proxy ->
+      RecDir = thrift_proxy_app:get_env_var(log_dir),
+      LogFile = filename:join(RecDir, atom_to_list(P) ++ ".log"),
+      erlterm2file:start_link(L, LogFile);
+      
+    _ReplayMode ->
+      RecDir =thrift_proxy_app:get_env_var(rec_log_dir),
+      LogFile = filename:join(RecDir, atom_to_list(P) ++ ".log"),
+      ts_static_data:start_link(L, LogFile)
+  end,
+  ok.
 
 
 %%--------------------------------------------------------------------
@@ -476,13 +479,13 @@ forward_fun_cast(Fun, Args,
 %% Record the results.
 %%--------------------------------------------------------------------
 record_results(LogServer, ProxyName, Fun, Args, AdType, ThriftResponse) ->
-    % log the results
-    lager:debug("~p: Log request and response.", [ProxyName]),
-    TrimmedArgs = ProxyName:trim_args(Fun, Args),
-    erlterm2file:log(LogServer, 
-      #fun_call{adtype=AdType, 
-        fa=#fun_args{fct=Fun, trimmed_args=TrimmedArgs}, 
-        full_args=Args, resp=ThriftResponse}).
+  % log the results
+  lager:debug("~p: Log request and response.", [ProxyName]),
+  TrimmedArgs = ProxyName:trim_args(Fun, Args),
+  erlterm2file:log(LogServer, 
+    #fun_call{adtype=AdType, 
+      fa=#fun_args{fct=Fun, trimmed_args=TrimmedArgs}, 
+      full_args=Args, resp=ThriftResponse}).
 
 
 

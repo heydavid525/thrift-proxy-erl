@@ -92,16 +92,23 @@ init(FileName) ->
 
 % Return the Thrift response (including {reply, ...}).
 handle_call({lookup, fun_args, Fun, TrimmedArgs}, _From, Tid) ->
-    LookUpRes = ets:lookup(Tid, 
-      #fun_args{fct=Fun, trimmed_args=TrimmedArgs}),
-    if 
-        LookUpRes =:= [] ->
+    LookUpRes = 
+      case ets:lookup(Tid, #fun_args{fct=Fun, 
+                                     trimmed_args=TrimmedArgs}) of
+        [] ->
+            lager:warning("No matching key in ets. Fun = ~p." ++ 
+                          "See trimmed_args.log for the lookup argument.",
+                          [Fun]),
+            %% open with [write] without read truncate any existing file.
+            erlterm2file:start_link(trimmed_args, 
+              "trimmed_args.log", [write]),
+            erlterm2file:log(trimmed_args, TrimmedArgs),
+            erlterm2file:stop(trimmed_args),
             {error, keynotfound};
-        true ->
-            ok,
-            Res = lists:nth(1, LookUpRes),
-            {reply, Res#fun_call.resp, Tid}
-    end;
+        [Res] ->
+            Res
+    end,
+    {reply, LookUpRes#fun_call.resp, Tid};
 
 % Return the Thrift (untrimmed) argument
 handle_call({lookup, adtype_fct, AdType, Fun}, _From, Tid) ->

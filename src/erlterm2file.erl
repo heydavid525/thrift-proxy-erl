@@ -12,7 +12,10 @@
 -include("ts_static_data_types.hrl").
 
 %% API
--export([start_link/2, stop/1, log/2]).
+-export([start_link/2, 
+         start_link/3,
+         stop/1, 
+         log/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -31,7 +34,10 @@
 %% Description: Starts the server
 %%--------------------------------------------------------------------
 start_link(ServerName, Filename) when is_atom(ServerName) ->
-  gen_server:start_link({local, ServerName}, ?MODULE, [Filename], []).
+  start_link(ServerName, Filename, [read, append]).
+
+start_link(ServerName, Filename, FileMode) when is_atom(ServerName) ->
+  gen_server:start_link({local, ServerName}, ?MODULE, [Filename, FileMode], []).
 
 stop(ServerName) ->
   gen_server:call(ServerName, stop).
@@ -50,12 +56,12 @@ log(ServerName, Term) ->
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
-init(FileName) ->
+init([FileName, FileMode]) ->
   
   % Need to trigger terminate() to close file.
   process_flag(trap_exit, true),
 
-  case file:open(FileName, [read, append]) of
+  case file:open(FileName, FileMode) of
     {ok, Fd} -> 
       % Append to file by starting at end of file.
       lager:info("Opened ~p", [FileName]),
