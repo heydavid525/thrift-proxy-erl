@@ -12,10 +12,17 @@
 -include("ts_static_data_types.hrl").
 %-include("ts_profile.hrl").
 
+
+%% A lowly hack to let ets table key on fun_args pair so that we can 
+%% use ets:lookup, much faster than, ets:match.
+-record(fun_call_wrapper, 
+        {fun_args,  % {fct, args}
+         fun_call = #fun_call{}}).
+
 -behaviour(gen_server).
 
 %% API
--export([start_link/2, stop/1, lookup/4]).
+-export([start_link/2, start_link/3, stop/1, lookup/4]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -34,8 +41,14 @@
 
 %% RecFile contains the erlang terms for thrift request.
 %% Read RecFile to ets table TableName
-start_link(ServerName, RecFile) when is_atom(ServerName) ->
-    InitOpts = [RecFile],
+start_link(ServerName, RecFile) -> 
+  start_link(ServerName, RecFile, {undefined, undefined}).
+
+%% Proxy:TrimFun/1, if defined, will be used to process 
+%% #fun_call{}.
+start_link(ServerName, RecFile, {Proxy, TrimFun}) 
+  when is_atom(ServerName) ->
+    InitOpts = [RecFile, Proxy, TrimFun],
     GenServOpts = [],
     gen_server:start_link({local, ServerName}, ?MODULE, InitOpts, 
         GenServOpts).
@@ -62,20 +75,18 @@ lookup(ServerName, fun_args, Fun, Args) ->
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
-init(FileName) ->
+init([FileName, Proxy, TrimFun]) ->
     % Need to trigger terminate() to close file.
     process_flag(trap_exit, true),
 
     Tid = ets:new(dummy_table_name, 
             [set, %named_table,
-            {keypos, #fun_call.fa}, % Primary key is fct_args pair.
+            {keypos, #fun_call_wrapper.fun_args}, % Primary key is fun_args pair.
             {read_concurrency, true}]),
+    
+    read_to_ets(FileName, Tid, Proxy, TrimFun),
 
-    read_to_ets(FileName, Tid),
-
-    lager:info("~p:init is finished.~n", [?MODULE]),
-    io:format("init is finished.~n",[]),
-
+    lager:debug("~p:init is finished.~n", [?MODULE]),
     {ok, Tid}.
 
 
@@ -93,36 +104,39 @@ init(FileName) ->
 % Return the Thrift response (including {reply, ...}).
 handle_call({lookup, fun_args, Fun, TrimmedArgs}, _From, Tid) ->
     LookUpRes = 
-      case ets:lookup(Tid, #fun_args{fct=Fun, 
-                                     trimmed_args=TrimmedArgs}) of
+      case ets:lookup(Tid, {Fun, TrimmedArgs}) of
         [] ->
-            lager:warning("No matching key in ets. Fun = ~p." ++ 
+            lager:error("No matching key in ets. Fun = ~p." ++ 
                           "See trimmed_args.log for the lookup argument.",
                           [Fun]),
             %% open with [write] without read truncate any existing file.
-            erlterm2file:start_link(trimmed_args, 
+            erlterm2file:start_link(trimmed_args_server, 
               "trimmed_args.log", [write]),
-            erlterm2file:log(trimmed_args, TrimmedArgs),
-            erlterm2file:stop(trimmed_args),
+            erlterm2file:log(trimmed_args_server, TrimmedArgs),
+            erlterm2file:stop(trimmed_args_server),
             {error, keynotfound};
         [Res] ->
             Res
     end,
-    {reply, LookUpRes#fun_call.resp, Tid};
+    {reply, LookUpRes#fun_call_wrapper.fun_call#fun_call.resp, Tid};
 
 % Return the Thrift (untrimmed) argument
 handle_call({lookup, adtype_fct, AdType, Fun}, _From, Tid) ->
     LookUpRes = ets:match_object(Tid, 
-                  #fun_call{adtype=AdType, fa=#fun_args{fct=Fun, _='_'}, _='_'}),
+                  #fun_call_wrapper{
+                    fun_call=#fun_call{adtype=AdType, fct=Fun, _='_'}, 
+                    _='_'}),
     if 
         LookUpRes =:= [] ->
-            lager:warning("No matching key in ets. AdType = ~p, Fun = ~p",
-                          [AdType, Fun]);
+            lager:error("No matching key in ets. AdType = ~p, Fun = ~p",
+                         [AdType, Fun]);
         true ->
+            lager:debug("Matched key in ets!! AdType = ~p, Fun = ~p",
+                         [AdType, Fun]),
             ok
     end,
     Res = lists:nth(1, LookUpRes),
-    {reply, Res#fun_call.full_args, Tid};
+    {reply, Res#fun_call_wrapper.fun_call#fun_call.args, Tid};
 
 handle_call(_Request, _From, Tid) ->
     Reply = ok,
@@ -169,13 +183,25 @@ code_change(_OldVsn, Tid, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-read_to_ets(FileName, Tid) ->
-    {ok, Terms} = file:consult(FileName),
-    read_one(Terms, Tid).
+read_to_ets(FileName, Tid, Proxy, TrimFun) ->
+    {ok, FunCalls} = file:consult(FileName),
+    read_one(FunCalls, Tid, Proxy, TrimFun).
 
-read_one([], _Tid) ->
+read_one([], _Tid, _Proxy, _TrimFun) ->
     ok;
-read_one([FirstTerm = #fun_call{} | T], Tid) ->
-    ets:insert(Tid, FirstTerm#fun_call{}),
-    read_one(T, Tid).
+
+read_one([FunCall = #fun_call{fct=Fun, args=Args} | T], 
+          Tid, Proxy, TrimFun) ->
+    % Trim/not trim Args
+    NewArgs = 
+      case Proxy of
+        undefined -> Args;
+        _Else     -> Proxy:TrimFun(Fun, Args)
+      end,
+
+    WrappedFunCall = 
+      #fun_call_wrapper{fun_args={Fun, NewArgs}, fun_call=FunCall},
+    ets:insert(Tid, WrappedFunCall),
+
+    read_one(T, Tid, Proxy, TrimFun).
 

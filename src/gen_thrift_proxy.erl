@@ -120,6 +120,7 @@ trim_args_helper(Dict, KeysToRemove)
 
   lists:foldl(CheckErase, Dict, KeysToRemove).
 
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -362,7 +363,8 @@ start_log_server(#state{proxy_name = P, log_server = L, mode = M}) ->
     _ReplayMode ->
       RecDir =thrift_proxy_app:get_env_var(rec_log_dir),
       LogFile = filename:join(RecDir, atom_to_list(P) ++ ".log"),
-      ts_static_data:start_link(L, LogFile)
+      lager:info("Opening ~p to replay.", [LogFile]),
+      ts_static_data:start_link(L, LogFile, {P, trim_args})
   end,
   ok.
 
@@ -371,7 +373,7 @@ start_log_server(#state{proxy_name = P, log_server = L, mode = M}) ->
 %% Replay the recorded call.
 %%--------------------------------------------------------------------
 replay_response(Fun, Args,
-                #state{proxy_name         = ProxyName,
+            S = #state{proxy_name         = ProxyName,
                        log_server         = LogServer}) ->
 
   lager:info("Proxy ~p replaying Thrift response to fun ~p", 
@@ -382,9 +384,8 @@ replay_response(Fun, Args,
     ts_static_data:lookup(LogServer, fun_args, Fun, TrimmedArgs),
 
   case ThriftResponse of
-    {error, _Reason} ->
-        lager:warning("No matching key in ets. Key(fun_args) = ~p", 
-          [#fun_args{fct=Fun, trimmed_args=TrimmedArgs}]);
+    {error, Reason} ->
+        terminate({error, Reason}, S);
     Else ->
         Else
   end.
@@ -485,11 +486,8 @@ forward_fun_cast(Fun, Args,
 record_results(LogServer, ProxyName, Fun, Args, AdType, ThriftResponse) ->
   % log the results
   lager:debug("~p: Log request and response.", [ProxyName]),
-  TrimmedArgs = ProxyName:trim_args(Fun, Args),
   erlterm2file:log(LogServer, 
-    #fun_call{adtype=AdType, 
-      fa=#fun_args{fct=Fun, trimmed_args=TrimmedArgs}, 
-      full_args=Args, resp=ThriftResponse}).
+    #fun_call{adtype=AdType, fct=Fun, args=Args, resp=ThriftResponse}).
 
 
 
@@ -525,4 +523,5 @@ replay_fun_call(AdType, Fun,
 %%   Formatted string.
 %%--------------------------------------------------------------------
 string_format(Pattern, Values) ->
-     lists:flatten(io_lib:format(Pattern, Values)).
+  lists:flatten(io_lib:format(Pattern, Values)).
+
